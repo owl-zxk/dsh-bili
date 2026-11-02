@@ -1,0 +1,14 @@
+# dsh-bili 的插入声明（装法：dsh plugin --profile desktop add "link:<本目录>"）
+#
+# 为什么 id 与 name 是两个不同的东西：
+#   id   是 profile 里这一行的标识，**同一个 id 只能出现一次**（重复 insert 会让宿主拒绝整份 patch）；
+#   name 是 cordis 用来 import 的模块名。
+#
+# 为什么 name 必须写完整包名而不是短名 'dsh-bili'（这一条是实测结论，不是推测）：
+#   本包是 scoped 包（@owl-zxk/dsh-bili），解析入口在 node_modules/@owl-zxk/dsh-bili 下。
+#   短名会让宿主在 node_modules/dsh-bili 找不到模块 —— 症状是"装上了但插件没加载"，
+#   日志里只有一句 module not found，很容易误判成路径写错。
+#   本机另一个 scoped 插件的 patch 就是这么写的（id 短、name 全名），照它对齐。
+- insert:
+    - id: dsh-bili
+      name: '@owl-zxk/dsh-bili'

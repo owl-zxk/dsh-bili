@@ -1,0 +1,48 @@
+{
+  "name": "@owl-zxk/dsh-bili",
+  "version": "0.1.0",
+  "description": "B站账号管理内核：让 DSH agent 能以主人的 B站账号安全地读和写。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "docs",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/owl-zxk/dsh-bili.git"
+  },
+  "homepage": "https://github.com/owl-zxk/dsh-bili#readme",
+  "bugs": {
+    "url": "https://github.com/owl-zxk/dsh-bili/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "bilibili",
+    "bili"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

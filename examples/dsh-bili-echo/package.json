@@ -1,0 +1,18 @@
+{
+  "name": "@owl-zxk/dsh-bili-echo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "示例扩展：向 @owl-zxk/dsh-bili 内核注册一个能力，并调用一次内核接口。示例用，不装进 profile。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

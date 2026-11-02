@@ -1,0 +1,4 @@
+# 示例扩展的插入声明。
+#   id   全链唯一（重复 insert 会让宿主拒绝整份 patch）；
+#   name 必须是完整包名 —— 写短名 dsh-bili-echo 会让宿主去 node_modules/dsh-bili-echo 找，症状是"装上了但没能力"。
+- insert: [{ id: dsh-bili-echo, name: '@owl-zxk/dsh-bili-echo' }]
