@@ -181,10 +181,10 @@ test('apply 期自愈：lib/core/autonomy.js 缺失时 apply 仍成功、25 工�
 
 /* ══════════════════════════════ c. 路由挂载 ══════════════════════════════ */
 
-test('路由挂载：kernel 3 条 + self 8 条 = 11；self-routes 缺失时仍 3 条 + 25 工具 + warn', async () => {
+test('路由挂载：kernel 4 条 + self 8 条 = 12；self-routes 缺失时仍 4 条 + 25 工具 + warn', async () => {
   const env = selfEnv('aut-c')
   try {
-    const KERNEL = ['/dsh-bili/api/kernel/status', '/dsh-bili/api/kernel/settings', '/dsh-bili/api/kernel/credential']
+    const KERNEL = ['/dsh-bili/api/kernel/status', '/dsh-bili/api/kernel/settings', '/dsh-bili/api/kernel/credential', '/dsh-bili/api/kernel/probe']
     // self 现在 8 条（§14.5 加了 profile / memes / meme-refresh）。逐条列出来，别只断言数量 ——
     // 数字对但路径换了是发生在"用户点开那一页 404"之后才会被发现的事。
     const SELF = [
@@ -207,11 +207,11 @@ test('路由挂载：kernel 3 条 + self 8 条 = 11；self-routes 缺失时仍 3
       await waitFor(() => SELF.every((p) => ctx.server.routes.has('exact:' + p)))
       for (const p of KERNEL) assert.ok(ctx.server.routes.has('exact:' + p), 'kernel 路由没挂上：' + p)
       for (const p of SELF) assert.ok(ctx.server.routes.has('exact:' + p), '自主层路由没挂上：' + p)
-      assert.equal(ctx.server.routes.size, 11, '一共 11 条（kernel 3 + self 8），实际 ' + ctx.server.routes.size + '：' + [...ctx.server.routes.keys()].join(' '))
+      assert.equal(ctx.server.routes.size, 12, '一共 12 条（kernel 4 + self 8），实际 ' + ctx.server.routes.size + '：' + [...ctx.server.routes.keys()].join(' '))
       assert.equal(ctx.registered.length, 25)
     }
 
-    // ② self-routes 缺失：kernel 3 条照挂，24 工具照在，只多一条 warn
+    // ② self-routes 缺失：kernel 4 条照挂，25 工具照在，只多一条 warn
     {
       const dest = tmpDir('aut-c-copy')
       copyLib(dest)
@@ -222,7 +222,7 @@ test('路由挂载：kernel 3 条 + self 8 条 = 11；self-routes 缺失时仍 3
       await Promise.allSettled(ctx.pending)
       await waitFor(() => ctx.warns.some((line) => /路由未挂载/.test(line)))
       for (const p of KERNEL) assert.ok(ctx.server.routes.has('exact:' + p), 'self-routes 挂了不该连累 kernel 路由：' + p)
-      assert.equal(ctx.server.routes.size, 3, '只剩 kernel 3 条，实际 ' + ctx.server.routes.size)
+      assert.equal(ctx.server.routes.size, 4, '只剩 kernel 4 条，实际 ' + ctx.server.routes.size)
       assert.equal(ctx.registered.length, 25, '路由少了几条也必须还有 25 个工具')
       const selfWarns = ctx.warns.filter((line) => /路由未挂载/.test(line))
       assert.equal(selfWarns.length, 1, '自愈只许一条 warn，实际 ' + JSON.stringify(selfWarns))

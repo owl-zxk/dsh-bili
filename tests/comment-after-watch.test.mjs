@@ -53,7 +53,7 @@ const fallbackRows = (audit) => auditRows(audit).filter((row) => row.args?.comme
 
 /* ══════════════════════════ a. 看过 + 没评论 → 补一条 ══════════════════════════ */
 
-test('看过+没评论：恰补一条评论（bvid 来自 lastWatchedBvid、atOwner 补 true、正文=她的 say 去前缀压换行）', async () => {
+test('看过+没评论：恰补一条评论（bvid 来自 lastWatchedBvid、atOwner 补 true、正文=她的 comment 去前缀压换行）', async () => {
   const env = cawEnv('caw-base')
   try {
     const autonomy = await import(repoUrl('lib/core/autonomy.js'))
@@ -66,7 +66,8 @@ test('看过+没评论：恰补一条评论（bvid 来自 lastWatchedBvid、atOw
     const watch = tool('bili_watch', () => ({ ok: true, data: { items: [{ bvid }] } }))
     const comment = tool('bili_comment', () => ({ ok: true, data: { rpid: 777 } }))
     const SAY = '@主人  这条真好' + NL + '我也想去看'
-    const llm = fakeLlm({ mood: '好奇', say: SAY, actions: [{ tool: 'bili_watch', args: { limit: 3 }, why: '刷一下' }], diary: '', memory: [] })
+    // 频道已经分开：公开评论读 comment，say 只用于私信。这里只给 comment，say 故意留空。
+    const llm = fakeLlm({ mood: '好奇', say: '', comment: SAY, actions: [{ tool: 'bili_watch', args: { limit: 3 }, why: '刷一下' }], diary: '', memory: [] })
     const deps = { tools: new Map([['bili_watch', watch], ['bili_comment', comment]]), llm, log: () => {}, ctx: {} }
 
     const result = await autonomy.runOnce('manual', deps)
@@ -77,7 +78,7 @@ test('看过+没评论：恰补一条评论（bvid 来自 lastWatchedBvid、atOw
     const args = comment.calls[0]
     assert.equal(args.bvid, bvid, 'bvid 必须来自刚看的那个视频（state.lastWatchedBvid），实际 ' + JSON.stringify(args.bvid))
     assert.equal(args.atOwner, true, 'atOwner 必须走 atOwnerOnComment（默认开 → 补 true），实际 ' + JSON.stringify(args.atOwner))
-    assert.equal(args.message, '这条真好 我也想去看', '正文必须是她的 say 去掉开头 @xx、换行压成空格，实际 ' + JSON.stringify(args.message))
+    assert.equal(args.message, '这条真好 我也想去看', '正文必须是她的 comment 去掉开头 @xx、换行压成空格，实际 ' + JSON.stringify(args.message))
 
     const rows = fallbackRows(audit)
     assert.equal(rows.length, 1, '必须留一条兜底审计，实际 ' + rows.length)
@@ -90,12 +91,13 @@ test('看过+没评论：恰补一条评论（bvid 来自 lastWatchedBvid、atOw
   }
 })
 
-/* ══════════════════════════ b. say 为空 → 固定正文 ══════════════════════════ */
+/* ══════════════════════════ b. 没有 comment → 不发（旧的固定兜底句已删除） ══════════════════════════ */
 
-test('say 为空：正文用「看完这条了，先记着。」（不是空串）', async () => {
-  const env = cawEnv('caw-empty-say')
+test('comment 为空：一条都不发，审计写「跳过：没有可说的内容」（say 不会顶上去当评论）', async () => {
+  const env = cawEnv('caw-empty-comment')
   try {
     const autonomy = await import(repoUrl('lib/core/autonomy.js'))
+    const audit = await import(repoUrl('lib/core/audit.js'))
     autonomy.stop()
     await primeSchedule()
     await seedState()
@@ -103,12 +105,17 @@ test('say 为空：正文用「看完这条了，先记着。」（不是空串�
     const bvid = 'BV1GJ411x7h2'
     const watch = tool('bili_watch', () => ({ ok: true, data: { items: [{ bvid }] } }))
     const comment = tool('bili_comment', () => ({ ok: true, data: { rpid: 1 } }))
-    const llm = fakeLlm({ mood: '平静', say: '   ', actions: [{ tool: 'bili_watch', args: { limit: 2 } }], diary: '', memory: [] })
+    // say 故意给一句状态自述：它只用于私信，绝不许被当成公开评论发出去
+    const llm = fakeLlm({ mood: '平静', say: '我在刷关注列', actions: [{ tool: 'bili_watch', args: { limit: 2 } }], diary: '', memory: [] })
     const deps = { tools: new Map([['bili_watch', watch], ['bili_comment', comment]]), llm, log: () => {}, ctx: {} }
 
     await autonomy.runOnce('manual', deps)
-    assert.equal(comment.calls.length, 1, '仍应补一条评论')
-    assert.equal(comment.calls[0].message, '看完这条了，先记着。', '没话说时必须用固定正文，实际 ' + JSON.stringify(comment.calls[0].message))
+    assert.equal(comment.calls.length, 0, '没有 comment 就一条都不许发（旧的固定兜底句已删除），实际 ' + comment.calls.length + ' 条')
+    const rows = audit.readAudit(50).filter((row) => row.args?.commentFallback === 'true')
+    assert.equal(rows.length, 1, '必须留一条说明为什么没发，实际 ' + rows.length)
+    assert.match(String(rows[0].why), /跳过：没有可说的内容/, '审计 why 要写清是没内容可发，实际 ' + rows[0].why)
+    assert.equal(rows[0].ok, false, '这条审计是跳过，ok 必须 false')
+    assert.equal(rows[0].reason, 'no-content', 'reason 必须是 no-content，实际 ' + rows[0].reason)
   } finally {
     env.restore()
   }
@@ -158,7 +165,8 @@ test('不该补：commentAfterWatch=false → 0 次；allows.comment=false → 0
     const audit = await import(repoUrl('lib/core/audit.js'))
     autonomy.stop()
     const bvid = 'BV1GJ411x7h4'
-    const decision = () => ({ mood: '平静', say: '看完了', actions: [{ tool: 'bili_watch', args: { limit: 2 } }], diary: '', memory: [] })
+    // 决策必须带 comment：否则会先被「没有可说的内容」拦下，测不到通道/去重这些闸
+    const decision = () => ({ mood: '平静', say: '', comment: '看完了，想说一句', actions: [{ tool: 'bili_watch', args: { limit: 2 } }], diary: '', memory: [] })
     const runCase = async (label) => {
       const watch = tool('bili_watch', () => ({ ok: true, data: { items: [{ bvid }] } }))
       const comment = tool('bili_comment', () => ({ ok: true, data: { rpid: 3 } }))
@@ -216,7 +224,7 @@ test('发不出去（写间隔未到/闸拒绝）：只尝试 1 次、不重试�
     // 真机上「写间隔未到」长这样：闸拒绝 → commentApi 返回 reason=quota-exceeded → 工具 ok:false。
     // 这一层看到的形状与真闸一致（attempted 一次、失败一次），所以用桩注入同一形状。
     const comment = tool('bili_comment', () => ({ ok: false, reason: 'quota-exceeded', human: '上一条评论刚发出去，还要等 98 秒（间隔 120 秒）' }))
-    const llm = fakeLlm({ mood: '平静', say: '看完了说一句', actions: [{ tool: 'bili_watch', args: { limit: 2 } }], diary: '', memory: [] })
+    const llm = fakeLlm({ mood: '平静', say: '', comment: '看完了说一句', actions: [{ tool: 'bili_watch', args: { limit: 2 } }], diary: '', memory: [] })
     const deps = { tools: new Map([['bili_watch', watch], ['bili_comment', comment]]), llm, log: () => {}, ctx: {} }
 
     const result = await autonomy.runOnce('manual', deps)

@@ -240,7 +240,9 @@ test('新 @ 且坐标齐全 → 回 1 条 bili_reply（oid/root/rpid 正确）�
     await seedState()
     const atMe = tool('bili_at_me', () => ({ ok: true, items: [{ id: '9001', oid: '222', root: '111', rpid: '333', mid: '9', uname: 'UP甲', type: 'comment', text: '@你' }] }))
     const reply = tool('bili_reply', () => ({ ok: true, data: { rpid: 7001 } }))
-    const deps = { tools: new Map([['bili_at_me', atMe], ['bili_reply', reply]]), llm: fakeLlm(emptyDecision()), log: () => {}, ctx: {} }
+    const REPLY = '是有点快，第三秒那个转场我也跟丢了一下'
+    // 回复的正文来自 thought.reply（say 只用于私信），所以决策必须带 reply
+    const deps = { tools: new Map([['bili_at_me', atMe], ['bili_reply', reply]]), llm: fakeLlm({ mood: '平静', say: '', reply: REPLY, actions: [], diary: '', memory: [] }), log: () => {}, ctx: {} }
 
     await runTick(deps)
     assert.equal(atMe.calls.length, 1, '第一轮应当查一次 @我，实际 ' + atMe.calls.length)
@@ -251,7 +253,7 @@ test('新 @ 且坐标齐全 → 回 1 条 bili_reply（oid/root/rpid 正确）�
       { oid: '222', root: '111', rpid: '333' },
       '回复坐标必须原样来自那条 @，实际 ' + JSON.stringify(reply.calls[0])
     )
-    assert.equal(reply.calls[0].message, '来了来了', '正文应当用她这一轮的 say，实际 ' + JSON.stringify(reply.calls[0].message))
+    assert.equal(reply.calls[0].message, REPLY, '正文必须用这一轮的 reply（不是 say），实际 ' + JSON.stringify(reply.calls[0].message))
     assert.deepEqual(readState().seenAtMeIds, ['9001'], '必须把这条 @ 记进 seenAtMeIds，实际 ' + JSON.stringify(readState().seenAtMeIds))
 
     // 第二轮：清掉节流时间（否则 30 分钟窗口直接跳过），@我 会再查一次，但没有新条目 → 不许再回
@@ -272,7 +274,9 @@ test('只解析出 oid（缺 root/rpid）→ 不回，审计 why 含「坐标不
     await seedState()
     const atMe = tool('bili_at_me', () => ({ ok: true, items: [{ id: '9002', oid: '222', mid: '9', uname: 'UP甲', type: 'comment', text: '@你' }] }))
     const reply = tool('bili_reply', () => ({ ok: true, data: { rpid: 7002 } }))
-    const deps = { tools: new Map([['bili_at_me', atMe], ['bili_reply', reply]]), llm: fakeLlm(emptyDecision()), log: () => {}, ctx: {} }
+    const REPLY = '是有点快，第三秒那个转场我也跟丢了一下'
+    // 回复的正文来自 thought.reply（say 只用于私信），所以决策必须带 reply
+    const deps = { tools: new Map([['bili_at_me', atMe], ['bili_reply', reply]]), llm: fakeLlm({ mood: '平静', say: '', reply: REPLY, actions: [], diary: '', memory: [] }), log: () => {}, ctx: {} }
 
     await runTick(deps)
     assert.equal(reply.calls.length, 0, '坐标不全时一条都不许回（宁可沉默，也不要发成顶层评论），实际 ' + reply.calls.length)
@@ -293,7 +297,9 @@ test('replyToMentions=false → 连 bili_at_me 都不读（0 次）', async () =
     await seedState()
     const atMe = tool('bili_at_me', () => ({ ok: true, items: [{ id: '9003', oid: '222', root: '111', rpid: '333' }] }))
     const reply = tool('bili_reply', () => ({ ok: true, data: {} }))
-    const deps = { tools: new Map([['bili_at_me', atMe], ['bili_reply', reply]]), llm: fakeLlm(emptyDecision()), log: () => {}, ctx: {} }
+    const REPLY = '是有点快，第三秒那个转场我也跟丢了一下'
+    // 回复的正文来自 thought.reply（say 只用于私信），所以决策必须带 reply
+    const deps = { tools: new Map([['bili_at_me', atMe], ['bili_reply', reply]]), llm: fakeLlm({ mood: '平静', say: '', reply: REPLY, actions: [], diary: '', memory: [] }), log: () => {}, ctx: {} }
 
     await runTick(deps)
     assert.equal(atMe.calls.length, 0, '开关关掉时连读都不许读，实际 ' + atMe.calls.length + ' 次')
@@ -315,7 +321,8 @@ test('评论回复判据：parent 指向别人 → 不回；parent 指向她的 
     let rows = [{ rpid: '333', mid: '555', parent: '444', content: { message: '别人回别人' } }]
     const replies = tool('bili_replies', () => ({ ok: true, data: { replies: rows } }))
     const reply = tool('bili_reply', () => ({ ok: true, data: { rpid: 7003 } }))
-    const deps = { tools: new Map([['bili_replies', replies], ['bili_reply', reply]]), llm: fakeLlm(emptyDecision()), log: () => {}, ctx: {} }
+    const REPLY = '你说的对，我这边也是这么想的'
+    const deps = { tools: new Map([['bili_replies', replies], ['bili_reply', reply]]), llm: fakeLlm({ mood: '平静', say: '', reply: REPLY, actions: [], diary: '', memory: [] }), log: () => {}, ctx: {} }
 
     await runTick(deps)
     assert.equal(replies.calls.length, 1, '应当查一次楼中楼，实际 ' + replies.calls.length)
@@ -330,6 +337,8 @@ test('评论回复判据：parent 指向别人 → 不回；parent 指向她的 
       { oid: reply.calls[0].oid, root: reply.calls[0].root, rpid: reply.calls[0].rpid },
       { oid: '222', root: '111', rpid: '334' },
       '回复坐标必须来自她的那条评论与对方的回复，实际 ' + JSON.stringify(reply.calls[0])
+    )
+    assert.equal(reply.calls[0].message, REPLY, '回复正文必须用这一轮的 reply，实际 ' + JSON.stringify(reply.calls[0].message)
     )
   } finally {
     env.restore()
@@ -377,7 +386,9 @@ test('信封 {code:-101} → not-logged-in；自主层安静跳过：不抛、�
     await seedState()
     const atMe = tool('bili_at_me', () => ({ ok: false, reason: 'not-logged-in', human: '账号未登录，去设置页重贴 cookie' }))
     const reply = tool('bili_reply', () => ({ ok: true, data: {} }))
-    const deps = { tools: new Map([['bili_at_me', atMe], ['bili_reply', reply]]), llm: fakeLlm(emptyDecision()), log: () => {}, ctx: {} }
+    const REPLY = '是有点快，第三秒那个转场我也跟丢了一下'
+    // 回复的正文来自 thought.reply（say 只用于私信），所以决策必须带 reply
+    const deps = { tools: new Map([['bili_at_me', atMe], ['bili_reply', reply]]), llm: fakeLlm({ mood: '平静', say: '', reply: REPLY, actions: [], diary: '', memory: [] }), log: () => {}, ctx: {} }
 
     let first = null
     await assert.doesNotReject(async () => { first = await runTick(deps) }, '未登录绝不许把 tick 抛穿')
@@ -405,7 +416,9 @@ test('信封 {code:-412} → risk-control；自主层同样安静跳过', async 
     await seedState()
     const atMe = tool('bili_at_me', () => ({ ok: false, reason: 'risk-control', human: '风控中' }))
     const reply = tool('bili_reply', () => ({ ok: true, data: {} }))
-    const deps = { tools: new Map([['bili_at_me', atMe], ['bili_reply', reply]]), llm: fakeLlm(emptyDecision()), log: () => {}, ctx: {} }
+    const REPLY = '是有点快，第三秒那个转场我也跟丢了一下'
+    // 回复的正文来自 thought.reply（say 只用于私信），所以决策必须带 reply
+    const deps = { tools: new Map([['bili_at_me', atMe], ['bili_reply', reply]]), llm: fakeLlm({ mood: '平静', say: '', reply: REPLY, actions: [], diary: '', memory: [] }), log: () => {}, ctx: {} }
     let out = null
     await assert.doesNotReject(async () => { out = await runTick(deps) }, '风控绝不许把 tick 抛穿')
     assert.equal(out.ok, true, '风控也只是一轮没读到 @，不该算这一轮失败')
@@ -581,7 +594,7 @@ test('同一次决策就带视频细节：模型只调 1 次，system 里同时�
       async *stream (options) {
         this.calls += 1
         prompts.push(options ?? {})
-        yield { type: 'text-delta', text: JSON.stringify({ mood: '好奇', say: SAY, actions: [], diary: '', memory: [] }) }
+        yield { type: 'text-delta', text: JSON.stringify({ mood: '好奇', say: '', reply: SAY, actions: [], diary: '', memory: [] }) }
         yield { type: 'finish', reason: { kind: 'ok' } }
       }
     }
@@ -598,8 +611,8 @@ test('同一次决策就带视频细节：模型只调 1 次，system 里同时�
     assert.ok(system.includes('来学一下这条'), 'system 里必须有那条 @ 的正文')
 
     assert.equal(reply.calls.length, 1, '应当回一条，实际 ' + reply.calls.length)
-    assert.equal(reply.calls[0].message, SAY, '回复正文必须就是这次决策的 say')
-    assert.ok(String(reply.calls[0].message).includes(TITLE), 'say 里带了标题，回复里就该有标题，实际 ' + JSON.stringify(reply.calls[0].message))
+    assert.equal(reply.calls[0].message, SAY, '回复正文必须就是这次决策的 reply')
+    assert.ok(String(reply.calls[0].message).includes(TITLE), 'reply 里带了标题，回复里就该有标题，实际 ' + JSON.stringify(reply.calls[0].message))
     assert.deepEqual({ oid: reply.calls[0].oid, root: reply.calls[0].root, rpid: reply.calls[0].rpid }, { oid: '222', root: '111', rpid: '333' }, '回复坐标必须来自那条 @')
 
     assert.deepEqual(order, ['video_info', 'reply'], '必须"先看视频、再回复"（顺序反了就说明细节拿不到），实际 ' + JSON.stringify(order))
@@ -632,7 +645,7 @@ test('没看成时"必须说明原因"：视频读失败也要把 bvid 与「没
       async *stream (options) {
         this.calls += 1
         prompts.push(options ?? {})
-        yield { type: 'text-delta', text: JSON.stringify({ mood: '平静', say: '这条我没看成，先记着', actions: [], diary: '', memory: [] }) }
+        yield { type: 'text-delta', text: JSON.stringify({ mood: '平静', say: '', reply: '这条我没看成（读不到详情），不过你的意思我收到了', actions: [], diary: '', memory: [] }) }
         yield { type: 'finish', reason: { kind: 'ok' } }
       }
     }
@@ -648,12 +661,81 @@ test('没看成时"必须说明原因"：视频读失败也要把 bvid 与「没
     assert.ok(system.includes('【有人 @ 我】'), '仍然要有【有人 @ 我】那段')
 
     assert.equal(reply.calls.length, 1, '没看成也要回 1 条（说明原因，不是沉默），实际 ' + reply.calls.length)
-    assert.equal(reply.calls[0].message, '这条我没看成，先记着', '回复正文就是这次决策的 say')
+    assert.equal(reply.calls[0].message, '这条我没看成（读不到详情），不过你的意思我收到了', '回复正文就是这次决策的 reply')
 
     const rows = audit.readAudit(50).filter((row) => row.args?.mentionError !== undefined && row.args.mentionError !== '')
     assert.equal(rows.length, 1, '必须留一条 mentionError 审计（事后能查"那天为什么没看成"），实际 ' + rows.length)
     assert.equal(rows[0].args.mentionBvid, BVID, '审计里要记是哪个 bvid，实际 ' + JSON.stringify(rows[0].args.mentionBvid))
     assert.equal(rows[0].ok, false, '这条审计是失败，ok 必须 false')
+  } finally {
+    env.restore()
+  }
+})
+
+/* ══════════════════════════ 19-20. 分频道文案：代码管频道，不管文风 ══════════════════════════ */
+
+test('只有 say、没有 comment/reply：评论与回复都零调用，两条审计各写清「跳过」原因', async () => {
+  const env = atEnv('at-channel-say-only')
+  try {
+    const autonomy = await import(repoUrl('lib/core/autonomy.js'))
+    const audit = await import(repoUrl('lib/core/audit.js'))
+    autonomy.stop()
+    // commentAfterWatch 打开，而决策只给 say —— 这条守的是「say 绝不许顶成公开文案」
+    await primeForMention({ commentAfterWatch: true })
+
+    const BVID = 'BV1CAnN6uEUN'
+    const atMe = tool('bili_at_me', () => ({
+      ok: true,
+      items: [{ id: '9101', oid: '222', root: '111', rpid: '333', bvid: BVID, uname: '某人', type: 'comment', text: '看看这个' }]
+    }))
+    const info = tool('bili_video_info', () => ({ ok: true, data: { title: '随便一个标题' } }))
+    const watch = tool('bili_watch', () => ({ ok: true, data: { items: [{ bvid: BVID }] } }))
+    const comment = tool('bili_comment', () => ({ ok: true, data: { rpid: 8001 } }))
+    const reply = tool('bili_reply', () => ({ ok: true, data: { rpid: 8002 } }))
+
+    const llm = fakeLlm({ mood: '平静', say: '我在刷关注列，还没看到什么特别的', actions: [{ tool: 'bili_watch', args: { limit: 3 } }], diary: '', memory: [] })
+    const deps = {
+      tools: new Map([['bili_at_me', atMe], ['bili_video_info', info], ['bili_watch', watch], ['bili_comment', comment], ['bili_reply', reply]]),
+      llm, log: () => {}, ctx: {}
+    }
+
+    const result = await autonomy.runOnce('manual', deps)
+    assert.equal(result.ok, true, '这一轮本身应当成功')
+    assert.equal(comment.calls.length, 0, '只有 say 时一条评论都不许发（say 只用于私信），实际 ' + comment.calls.length)
+    assert.equal(reply.calls.length, 0, '只有 say 时一条回复都不许发，实际 ' + reply.calls.length)
+
+    const rows = audit.readAudit(50)
+    const commentRows = rows.filter((row) => row.args?.commentFallback === 'true')
+    const replyRows = rows.filter((row) => row.args?.mentionFallback === 'true')
+    assert.equal(commentRows.length, 1, '评论侧必须留一条跳过审计，实际 ' + commentRows.length)
+    assert.match(String(commentRows[0].why), /跳过：没有可说的内容/, '评论侧 why 要写清没内容可发，实际 ' + commentRows[0].why)
+    assert.equal(replyRows.length, 1, '回复侧必须留一条跳过审计，实际 ' + replyRows.length)
+    assert.match(String(replyRows[0].why), /跳过：没有可回的内容/, '回复侧 why 要写清没内容可回，实际 ' + replyRows[0].why)
+  } finally {
+    env.restore()
+  }
+})
+
+test('决策带 comment（哪怕是状态自述）→ 原样发出：代码只管频道，不纠正文风', async () => {
+  const env = atEnv('at-channel-verbatim')
+  try {
+    const autonomy = await import(repoUrl('lib/core/autonomy.js'))
+    autonomy.stop()
+    await primeForMention({ commentAfterWatch: true })
+
+    const BVID = 'BV1CAnN6uEUN'
+    const watch = tool('bili_watch', () => ({ ok: true, data: { items: [{ bvid: BVID }] } }))
+    const comment = tool('bili_comment', () => ({ ok: true, data: { rpid: 8003 } }))
+    // 内容是提示词该管的事：这里故意给一句"自述"式的 comment，内核必须一字不改地发出去
+    const COMMENT = '我在刷关注列，看到这条还挺好'
+    const llm = fakeLlm({ mood: '平静', say: '（私信里我才说这句）', comment: COMMENT, actions: [{ tool: 'bili_watch', args: { limit: 2 } }], diary: '', memory: [] })
+    const deps = { tools: new Map([['bili_watch', watch], ['bili_comment', comment]]), llm, log: () => {}, ctx: {} }
+
+    const result = await autonomy.runOnce('manual', deps)
+    assert.equal(result.ok, true, '这一轮应当成功')
+    assert.equal(comment.calls.length, 1, '带了 comment 就该发一条，实际 ' + comment.calls.length)
+    assert.equal(comment.calls[0].message, COMMENT, '代码不许改写内容（文风是提示词的事），实际 ' + JSON.stringify(comment.calls[0].message))
+    assert.notEqual(comment.calls[0].message, '（私信里我才说这句）', 'say 绝不许顶成公开评论')
   } finally {
     env.restore()
   }

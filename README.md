@@ -626,6 +626,40 @@ ownerTitle: 主人
 
 ---
 
+### 8.11 会话模式：让她自己在会话里开车（2026-11-03，真机验证）
+
+默认（`sessionMode: "off"`）她每一步都由内核一次性问模型（`brain.decide`）再执行。
+打开会话模式后，改成**她自己在一个常驻会话里想、自己调工具**：
+
+```
+tick → 写 wake-context.md（时间/指标/未处理 @/上次看了什么）
+     → task_board_run({ taskId: <卡片>, rerun: true })
+     → 内核不再 decide、不再调任何写工具（避免两个司机）
+```
+
+| 设置项 | 值 | 说明 |
+|---|---|---|
+| `sessionMode` | `off` / `board` | `board` 才触发任务板卡片 |
+| `sessionCardId` | 卡片 id | 任务板里必须有一张开了 **reuseSession** 的卡；**工作区在卡上指定** |
+
+前提与边界：
+- 卡片要由人确认一次权限（`workspace-write` 高于会话默认时 `permissionPending` 会挡住运行）；
+- 她与会话里调同一批工具，**所有闸（token 预算、写间隔、通道上限、@主人、10 分钟/200MB 深读）仍在工具层生效**；
+- 内核只负责定时叫醒她、写上下文、更新指标；
+- 真机验证（2026-11-03）：她自己在会话里刷热门/排行、挑一条深读、看楼中楼、回私信；撞到 120 秒写间隔时**自己 sleep 111 秒后重试**。
+
+### 8.12 审计的两个来源
+
+`audit.jsonl` 里有两套行，靠 `source` 区分：
+
+| 来源 | 形状 | 谁写的 |
+|---|---|---|
+| 自主层 | `{ tool, why:<真实理由>, args, ok, reason }` | 内核每一轮 |
+| 工具层 | `{ tool, why:"工具调用", args, ok, reason, source:"tool", by? }` | **每次 `bili_*` 调用**（任何 agent） |
+
+工具层的 `by` 目前是 **callId**（宿主执行上下文只给了这个），能证明「某次调用发生过」，但**不能按会话聚合**。
+按会话追查请看会话记录（`$DSH_HOME/sessions/<workspace>/<session>/session.v4.jsonl.zstd`）。
+
 ## 9. 扩展：两种方向
 
 内核对外只暴露一个东西：`ctx.bili`。

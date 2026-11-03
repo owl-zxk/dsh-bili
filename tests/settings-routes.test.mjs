@@ -7,7 +7,7 @@
 //   这种缺陷用"路由表里有我的路径"是测不出来的（撞车时根本没有进表），所以这里做两件事：
 //     ① 复刻撞车现场：假 webServer 先把**旧路径**占住，register 时抛 duplicate exact route；
 //        然后调 mountSettingsRoutes —— 必须一条都不抛、三条新路径全部注册成功；
-//     ② 顺手钉住幂等性（HMR 场景）：同一台 server 上再挂一次，三条都算重复 →
+//     ② 顺手钉住幂等性（HMR 场景）：同一台 server 上再挂一次，四条都算重复 →
 //        必须返回空数组且不抛（实现里只吞 duplicate，别的错误仍要冒出去，这一点由 ① 之外
 //        的第三个断言守住：假 server 的其它错误不许被吞）。
 //   路径字符串是**逐条写死**的：换命名空间是装配契约的变化，不该被"从实现里读常量"糊过去。
@@ -23,6 +23,7 @@ const NEW_PATHS = [
   '/dsh-bili/api/kernel/status',
   '/dsh-bili/api/kernel/settings',
   '/dsh-bili/api/kernel/credential',
+  '/dsh-bili/api/kernel/probe',
 ]
 /** 鲸鱼插件占住的两条旧路径（真机实测：宿主把我们的注册静默丢弃，请求落到它的 handler 上）。 */
 const TAKEN_BY_OTHER_PLUGIN = ['/dsh-bili/api/status', '/dsh-bili/api/settings']
@@ -43,7 +44,7 @@ function fakeServer (preTaken = []) {
   }
 }
 
-test('设置页路由：旧路径被别的插件占住时，三条 /dsh-bili/api/kernel/* 仍全部注册成功且不抛', async () => {
+test('设置页路由：旧路径被别的插件占住时，四条 /dsh-bili/api/kernel/* 仍全部注册成功且不抛', async () => {
   const root = tmpDir('routes')
   const restoreEnv = sandboxEnv(root)
   try {
@@ -60,7 +61,7 @@ test('设置页路由：旧路径被别的插件占住时，三条 /dsh-bili/api
     )
 
     // ① 三条新路径全部注册成功，且返回的就是它们
-    assert.deepEqual(registered, NEW_PATHS, '必须注册三条 /dsh-bili/api/kernel/* 路由，实际：' + JSON.stringify(registered))
+    assert.deepEqual(registered, NEW_PATHS, '必须注册四条 /dsh-bili/api/kernel/* 路由，实际：' + JSON.stringify(registered))
     for (const path of NEW_PATHS) {
       assert.ok(server.routes.has('exact:' + path), '新路径没有真的进路由表：' + path)
       assert.equal(typeof server.routes.get('exact:' + path).handler, 'function', '路由必须带 handler：' + path)
@@ -68,7 +69,7 @@ test('设置页路由：旧路径被别的插件占住时，三条 /dsh-bili/api
     }
 
     // ② 我们一次都没去碰旧路径（不是"先注册失败再改注册新的"，而是从一开始就用新命名空间）
-    assert.equal(server.attempts.length, 3, '应当只尝试注册三条路由，实际 ' + server.attempts.length + ' 次：' + JSON.stringify(server.attempts))
+    assert.equal(server.attempts.length, 4, '应当只尝试注册四条路由，实际 ' + server.attempts.length + ' 次：' + JSON.stringify(server.attempts))
     for (const path of TAKEN_BY_OTHER_PLUGIN) {
       assert.equal(
         server.attempts.some((attempt) => attempt.path === path), false,
@@ -302,6 +303,98 @@ test('token 预算输入边界：1K/1k→1000，1.99K 是 1000–2000 的整数�
     const over = await settings.post({ tokenHourly: '1000000000001' })
     assert.equal(over.code, 400, '1e12+1 必须被拒（400），实际 ' + over.code)
     assert.equal(fs.readFileSync(settings.configFile, 'utf8'), baseline, '被拒之后配置文件必须原样不动')
+  } finally {
+    restoreEnv()
+    cleanupTmp()
+  }
+})
+
+/* ══════════════════════════ GET /dsh-bili/api/kernel/probe ══════════════════════════ */
+
+/** 挂上 kernel 四条路由，拿到 probe 的 handler。 */
+async function mountProbe (ctx) {
+  const { mountSettingsRoutes } = await import(repoUrl('lib/settings-api.js'))
+  const server = fakeServer([])
+  const deps = { log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }
+  await mountSettingsRoutes({ webServer: server }, { ctx, deps })
+  const route = server.routes.get('exact:/dsh-bili/api/kernel/probe')
+  assert.ok(route !== undefined, '第四条 kernel 路由 probe 必须真的进路由表')
+  assert.equal(route.kind, 'exact', 'probe 的 kind 必须是 exact')
+  return route.handler
+}
+
+const PROBE_TOOL_NAMES = ['subagent', 'subagent_fork', 'send_message', 'task_board_create', 'task_board_run', 'squad_member_add', 'squads_run_member', 'video_understand']
+
+test('kernel/probe 只读：假工具一次都没被 execute，且响应里不含任何凭据子串', async () => {
+  const root = tmpDir('probe-readonly')
+  const restoreEnv = sandboxEnv(root)
+  try {
+    let executions = 0
+    const fakeTool = { name: 'subagent', async execute () { executions += 1; return { ok: true } } }
+    const tools = {
+      get (name) { return PROBE_TOOL_NAMES.includes(name) ? fakeTool : undefined },
+      list () { return [] },
+      has () { return true },
+    }
+    const ctx = {
+      get (name) {
+        if (name === 'tools') return tools
+        if (name === 'agents') return { listSessions: () => [], createSession: () => ({}) }
+        if (name === 'workspaces') return { resolve: () => null }
+        return undefined
+      },
+    }
+    const handler = await mountProbe(ctx)
+    const { req, res } = fakeExchange('/dsh-bili/api/kernel/probe')
+    await handler(req, res)
+
+    assert.equal(res.code, 200, 'probe 必须 200，实际 ' + res.code)
+    const payload = JSON.parse(res.body)
+    assert.equal(payload.ok, true, 'probe 必须 ok:true')
+    assert.equal(payload.data.tools.get, true, 'tools.get 存在时 data.tools.get 必须是 true')
+    for (const name of PROBE_TOOL_NAMES) {
+      assert.equal(payload.data.needs[name], true, '宿主工具 ' + name + ' 存在时 needs 必须是 true，实际 ' + JSON.stringify(payload.data.needs[name]))
+    }
+
+    // ① 只读：只许"看一眼"，绝不许 execute（这是这个接口唯一的硬纪律）
+    assert.equal(executions, 0, 'probe 绝不许执行任何宿主工具，实际 execute 了 ' + executions + ' 次')
+
+    // ② 不含凭据：只回布尔与名字
+    const text = res.body.toLowerCase()
+    for (const needle of ['sessdata', 'bili_jct', 'cookie', 'token']) {
+      assert.equal(text.includes(needle), false, 'probe 响应里不许出现 ' + needle + '（只回布尔与名字），实际响应：' + res.body.slice(0, 300))
+    }
+  } finally {
+    restoreEnv()
+    cleanupTmp()
+  }
+})
+
+test('kernel/probe 炸了也 200：tools.get 抛错 → needs 全 false、错进 errors、路由不失败', async () => {
+  const root = tmpDir('probe-throws')
+  const restoreEnv = sandboxEnv(root)
+  try {
+    const ctx = {
+      get (name) {
+        if (name === 'tools') return { get () { throw new Error('boom-get') } }
+        if (name === 'agents') throw new Error('boom-agents')
+        return undefined
+      },
+    }
+    const handler = await mountProbe(ctx)
+    const { req, res } = fakeExchange('/dsh-bili/api/kernel/probe')
+    await handler(req, res)
+
+    assert.equal(res.code, 200, '任何一步抛错都不许让路由失败，必须仍然 200，实际 ' + res.code)
+    const payload = JSON.parse(res.body)
+    assert.equal(payload.ok, true, '仍然 ok:true（探测失败不等于接口失败）')
+    for (const name of PROBE_TOOL_NAMES) {
+      assert.equal(payload.data.needs[name], false, '拿不到就必须如实写 false：' + name + '，实际 ' + JSON.stringify(payload.data.needs[name]))
+    }
+    assert.equal(payload.data.services.agents.present, false, 'agents 抛错时 present 必须是 false')
+    assert.ok(Array.isArray(payload.data.errors) && payload.data.errors.length >= 2, '错要进 errors（至少 tools 与 agents 两条），实际 ' + JSON.stringify(payload.data.errors))
+    assert.ok(payload.data.errors.some((line) => String(line).includes('boom-get')), 'errors 里要能看到 tools.get 的原始错误，实际 ' + JSON.stringify(payload.data.errors))
+    assert.ok(payload.data.errors.some((line) => String(line).includes('boom-agents')), 'errors 里要能看到 agents 的原始错误，实际 ' + JSON.stringify(payload.data.errors))
   } finally {
     restoreEnv()
     cleanupTmp()

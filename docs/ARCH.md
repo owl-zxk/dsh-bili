@@ -394,6 +394,20 @@ caps: { dm: null, comment: null, reply: null, dynamic: 2, like: null, follow: nu
 - **保存时只提交 `caps.dynamic`**：后端本来就是部分更新，没提交的键保持原值 —— 界面简化不该把用户已经配好的上限写坏。
 - 第二行说明「上限只是自控；真正拦住高频的是 token 预算与两次写之间的间隔（120 秒）」保留在区块底部。
 
+### 8.10 会话模式（2026-11-03）
+
+`sessionMode: "board"` 时 `tick()` 的路径改变：
+
+```
+decayTo → regenEnergy → wake → 状态闸 → checkMentions（只读，写进上下文）
+  → writeWakeContext() → task_board_run({taskId, rerun:true}) → return
+```
+
+- **不再经过 `brain.decide` 与 `runActions`**：整段跳过，内核不与她的会话抢方向盘；
+- 触发用 `ctx.tools.get('task_board_run')`（与 `deepwatch` 取 `video_understand` 同一条已验证的路）；
+- 三种失败只记审计不阻塞：`no-card` / `tool-missing` / 抛错；
+- 上下文文件是**唯一的单向通道**（内核 → 她）；她不需要回传，因为活是她自己干的。
+
 ## 9. 共享状态与并发
 
 `<HOME>/.bili-ai/` 下的七份文件同时被本插件和另一个同账号实现读写（凭据 / 缓存 / 熔断 / 请求守卫状态 / 请求日志 / 内容账本 / token 采样状态），所以：

@@ -701,7 +701,37 @@ brain 的 system 第 9 条改写为：看完视频后用 bili_comment 在该 bvi
 
 - `ensureCommentReply()` 判新回复时**必须同时满足**：`root === 她的 rpid`、**`parent === 她的 rpid`**（直接回她）、`mid !== selfMid`、`rpid` 未见。实测 `bili_replies` 返回里 `parent` 字段存在（已验证），**别人回别人不该她插嘴**。
 
-## 25. 建议实施顺序
+
+---
+
+## 25. 真理解视频：下载 → 交给宿主的 video_understand（2026-11-02，用户已选）
+
+现状：bili_watch({deep:true}) 返回 capability-not-found（可用能力只有 video.fetch / comment.fetch / dynamic.feed / account.status）。
+
+### 25.1 已核实的两个事实
+1. bili_playurl({bvid, qn:64}) 返回的是**单文件 mp4 直链**（urls: [{order,length,size,url}]），不是 DASH —— 不需要合流，直接 HTTP GET 即可（必须带 Referer: https://www.bilibili.com/）；
+2. 宿主机有 **ffmpeg 9.0.2 在 PATH**，且宿主自带工具 video_understand({path, question, detail}) 吃**本地文件路径**、内部抽帧 + 转写。
+
+### 25.2 要做的（新增 lib/core/deepwatch.js + bili_watch 的 deep 分支）
+1. deep() 入口：给 bvid 与 question，流程：
+   ① bili_playurl({bvid, qn:64}) → 取 urls[0]（若 acceptQuality 有更高清，按 80 / 64 依次尝试）；
+   ② **体积闸**：size > 200MB → 直接返回 bad-argument（这条太大，不下），不下载；
+   ③ 下载到临时文件（os.tmpdir()/dsh-bili/<bvid>.mp4），带 Referer 与 UA，**超时 180 秒**、最大 200MB、流式写盘；
+   ④ 调宿主 video_understand：
+      - 先 ctx.tools.get('video_understand')；
+      - 拿不到再查能力注册表 video.understand；
+      - 都拿不到 → 返回 capability-not-found，文案说明宿主没有提供 video_understand，**并删掉已下载的临时文件**；
+   ⑤ 把它的返回（summary / answer / transcript 摘要）整理成工具结果；
+   ⑥ **无论成功失败都删临时文件**（finally）。
+2. bili_watch({deep:true, deepCount:1})：对列表前 deepCount 条（上限 3）走 deep()，结果挂到该条的 deep 字段；失败那条只挂 {ok:false, reason}，**不影响整批**。
+3. 限额：每次 deep 最多下载 1 个文件；**同一 bvid 10 分钟内不重复下载**（state.deepWatchCache）。
+
+### 25.3 不做的事（明确边界）
+- 不碰 DASH、不自己抽帧（那是宿主 video_understand 的活）；
+- 不下载弹幕/字幕；
+- 不把下载的文件留在盘上。
+
+## 26. 建议实施顺序
 
 1. `persona/memory/diary/state/audit` 五个文件层（纯函数，先写测试）
 2. `schedule`（窗口/抖动/上限/单飞锁/退避）+ 手动 `run-once` 路由
