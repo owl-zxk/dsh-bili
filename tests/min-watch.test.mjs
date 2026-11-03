@@ -178,7 +178,7 @@ test('换源只换一次：popular 失败 → ranking 成功（恰好两次，�
 
 /* ══════════════════════════ d. 闸：精力 / 读通道 / 开关 ══════════════════════════ */
 
-test('闸生效：energy=8 / allows.read=false / minWatchPerWake=false → 都不兜底（watch 零调用），前两种留一条 why 含「跳过」的审计', async () => {
+test('闸：energy=8 → 最小动作（popular/limit 1，不取详情）；allows.read=false 与开关关 → 零调用', async () => {
   const env = watchEnv('watch-gates')
   try {
     const autonomy = await import(repoUrl('lib/core/autonomy.js'))
@@ -201,21 +201,19 @@ test('闸生效：energy=8 / allows.read=false / minWatchPerWake=false → 都�
       return { result, watch, info, rows: auditRows(audit).slice(before) }
     }
 
-    // ① 精力太低：< 10 不兜底，并留下一条 why 含「跳过」的审计。
-    //    注意（读实现得到的机制，已报给调度者）：effectiveAllows 在 energy<10 时**连 read 一起关**
-    //    （"只剩活着"），而 ensureMinWatch 先判 allows.read 再看 energy，所以这里落盘的
-    //    args.skipped 文案是「读通道被关（allows.read=false）」而不是「精力太低」。
-    //    契约只要求"不兜底 + why 含跳过"，所以断言按契约写；文案不够准这点单独报告，不在测试里放宽。
+    // ① 精力低（energy=8：>=3 但 <10）→ 最小动作，不是取消兜底。
+    //    用户 2026-11-02 的要求是「除了 token 之外不该有别的东西拦住她看视频」；
+    //    energy 低只压缩动作规模（limit 1、不深读、不取详情），不取消「看一眼」。
     const metricsModule = await import(repoUrl('lib/core/metrics.js'))
-    assert.equal(metricsModule.effectiveAllows({ read: true }, { ...BASE_METRICS, energy: 8 }).read, false, '前提：energy<10 时 effectiveAllows 会把 read 也关掉')
+    assert.equal(metricsModule.effectiveAllows({ read: true }, { ...BASE_METRICS, energy: 8 }).read, false, '前提：energy<10 时 effectiveAllows 仍会关掉 read（但兜底已不看这条）')
     const tired = await runCase({ metrics: { ...BASE_METRICS, energy: 8 }, allows: {}, minWatchPerWake: true })
-    assert.equal(tired.watch.calls.length, 0, 'energy<10 时不许兜底调用 bili_watch，实际 ' + tired.watch.calls.length + ' 次')
-    assert.equal(tired.info.calls.length, 0, 'energy<10 时也不许看详情')
-    const tiredSkip = tired.rows.filter((row) => row.tool === 'watch-fallback')
-    assert.equal(tiredSkip.length, 1, 'energy<10 应当留一条 watch-fallback 审计，实际 ' + tiredSkip.length)
-    assert.match(String(tiredSkip[0].why), /跳过/, '那条审计的 why 要写清「跳过」：' + tiredSkip[0].why)
-    assert.equal(String(tiredSkip[0].args.skipped).length > 0, true, 'args.skipped 要写清为什么跳过，实际 ' + JSON.stringify(tiredSkip[0].args.skipped))
-
+    assert.equal(tired.watch.calls.length, 1, 'energy=8 时应当恰好兜底一次 bili_watch，实际 ' + tired.watch.calls.length + ' 次')
+    assert.deepEqual(tired.watch.calls[0], { source: 'popular', limit: 1 }, '最小动作必须是 popular + limit 1，实际 ' + JSON.stringify(tired.watch.calls[0]))
+    assert.equal('deep' in tired.watch.calls[0], false, '最小动作不许带 deep（深读一条约 2 万 token，累到不行不该烧）')
+    assert.equal(tired.info.calls.length, 0, '最小动作连详情都不取（那是第二次请求），实际 ' + tired.info.calls.length + ' 次')
+    const minimalRows = tired.rows.filter((row) => row.args?.minimal === 'true')
+    assert.equal(minimalRows.length, 1, '必须留一条带 minimal:true 的审计（事后能看出这轮是精简模式），实际 ' + minimalRows.length)
+    assert.match(String(minimalRows[0].why), /精力低/, '那条审计的 why 要写清是精力低：' + minimalRows[0].why)
     // ② 读通道被关：同样不兜底
     const readOff = await runCase({ metrics: { ...BASE_METRICS }, allows: { read: false }, minWatchPerWake: true })
     assert.equal(readOff.watch.calls.length, 0, 'allows.read=false 时不许兜底，实际 ' + readOff.watch.calls.length + ' 次')
@@ -228,6 +226,68 @@ test('闸生效：energy=8 / allows.read=false / minWatchPerWake=false → 都�
     assert.equal(off.watch.calls.length, 0, 'minWatchPerWake=false 时不许兜底，实际 ' + off.watch.calls.length + ' 次')
     assert.equal(off.rows.filter((row) => row.tool === 'watch-fallback').length, 0, '开关关掉时不该有 watch-fallback 审计（连跳过都不记），实际 ' + JSON.stringify(off.rows.filter((row) => row.tool === 'watch-fallback')))
     assert.equal(off.result.ok, true, '关掉兜底不影响这一轮本身（仍然 ok）')
+  } finally {
+    env.restore()
+  }
+})
+
+/* ══════════════════════════ 新语义的两条保护（2026-11-02） ══════════════════════════ */
+
+test('energy=2（< 3）：连兜底看也免 —— bili_watch 零调用，审计写清 energy=N < 3', async () => {
+  const env = watchEnv('watch-energy2')
+  try {
+    const autonomy = await import(repoUrl('lib/core/autonomy.js'))
+    const audit = await import(repoUrl('lib/core/audit.js'))
+    const schedule = await import(repoUrl('lib/core/schedule.js'))
+    autonomy.stop()
+    schedule.unlock()
+    schedule.saveSchedule({ enabled: true, windows: [{ start: '00:00', end: '24:00' }], allows: { read: true }, minWatchPerWake: true })
+    // tick 会先 applyEvent('wake') 扣 2 点，所以这里种 4 → 判断时是 2（< 3）
+    await seedState({ ...BASE_METRICS, energy: 4 })
+
+    const watch = tool('bili_watch', () => ({ ok: true, data: { items: [{ bvid: BVID }] } }))
+    const info = tool('bili_video_info', () => ({ ok: true, data: {} }))
+    const llm = fakeLlm({ mood: '平静', say: '', actions: [], diary: '', memory: [] })
+    const deps = { tools: new Map([['bili_watch', watch], ['bili_video_info', info]]), llm, log: () => {}, ctx: {} }
+    const before = audit.readAudit(50).length
+    await autonomy.runOnce('timer', deps)
+    const rows = audit.readAudit(50).slice(before)
+
+    assert.equal(watch.calls.length, 0, 'energy<3 时连兜底看都不许调，实际 ' + watch.calls.length + ' 次')
+    assert.equal(info.calls.length, 0, '更不许取详情')
+    const skipRows = rows.filter((row) => row.tool === 'watch-fallback')
+    assert.equal(skipRows.length, 1, '必须留一条跳过审计，实际 ' + skipRows.length)
+    assert.match(String(skipRows[0].args.skipped), /energy=2 < 3/, '审计要写具体数值（判断时 energy=2 < 3），实际 ' + JSON.stringify(skipRows[0].args.skipped))
+    assert.match(String(skipRows[0].why), /跳过/, 'why 要写清是跳过：' + skipRows[0].why)
+  } finally {
+    env.restore()
+  }
+})
+
+test('energy=50 回归：兜底仍是 popular/limit 5 且会取第一条详情（没把正常路径改坏）', async () => {
+  const env = watchEnv('watch-energy50')
+  try {
+    const autonomy = await import(repoUrl('lib/core/autonomy.js'))
+    const audit = await import(repoUrl('lib/core/audit.js'))
+    const schedule = await import(repoUrl('lib/core/schedule.js'))
+    autonomy.stop()
+    schedule.unlock()
+    schedule.saveSchedule({ enabled: true, windows: [{ start: '00:00', end: '24:00' }], allows: { read: true }, minWatchPerWake: true })
+    await seedState({ ...BASE_METRICS, energy: 50 })
+
+    const watch = tool('bili_watch', () => ({ ok: true, data: { items: [{ bvid: BVID }] } }))
+    const info = tool('bili_video_info', () => ({ ok: true, data: { bvid: BVID } }))
+    const llm = fakeLlm({ mood: '平静', say: '', actions: [], diary: '', memory: [] })
+    const deps = { tools: new Map([['bili_watch', watch], ['bili_video_info', info]]), llm, log: () => {}, ctx: {} }
+    const before = audit.readAudit(50).length
+    await autonomy.runOnce('timer', deps)
+    const rows = audit.readAudit(50).slice(before)
+
+    assert.equal(watch.calls.length, 1, '正常精力下兜底仍是一次 bili_watch，实际 ' + watch.calls.length)
+    assert.deepEqual(watch.calls[0], { source: 'popular', limit: 5 }, '正常路径必须仍是 popular + limit 5，实际 ' + JSON.stringify(watch.calls[0]))
+    assert.equal(info.calls.length, 1, '正常路径必须取第一条详情，实际 ' + info.calls.length)
+    assert.deepEqual(info.calls[0], { bvid: BVID }, '看的就是列表第一条，实际 ' + JSON.stringify(info.calls[0]))
+    assert.equal(rows.filter((row) => row.args?.minimal === 'true').length, 0, '正常路径不该出现 minimal 审计')
   } finally {
     env.restore()
   }

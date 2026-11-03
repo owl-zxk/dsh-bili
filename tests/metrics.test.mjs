@@ -407,7 +407,7 @@ test('interest 只应用一次：决策级 interest 或两条动作各带 intere
 
 /* ══════════════════════════ j. energy<10：runActions 层什么都不做 ══════════════════════════ */
 
-test('energy<10：runActions 层连只读都不做 —— 零执行、工具零调用、全部跳过', async () => {
+test('energy<10：读照常、写被 energy-too-low 跳过（旧语义「连只读都不做」已被用户推翻）', async () => {
   const env = metricsEnv('metrics-exhausted')
   try {
     const actions = await import(repoUrl('lib/core/actions.js'))
@@ -417,7 +417,8 @@ test('energy<10：runActions 层连只读都不做 —— 零执行、工具零�
     schedule.unlock()
     schedule.saveSchedule({ allows: { read: true, dm: true, comment: true }, caps: { dm: 4, comment: 6 } })
 
-    // 契约 §14.3（两档）：energy<20 保留 read+dm；energy<10 连 read 也关 —— 这一轮什么都不做。
+    // 契约 §14.3（2026-11-02 改）：energy<10 只拦**写**，读照常；energy<3 才连兜底看都免。
+    //   用户原话：「除了 token 之外不该有别的东西拦住她看视频」—— 所以这里断言的是「看得到、说不出」。
     await seedMetrics({ ...BASE, energy: 8 })
     patchState({ counters: {}, silenceUntil: 0 })
     const effective = metrics.effectiveAllows(schedule.loadSchedule().allows, metrics.readMetrics())
@@ -438,13 +439,16 @@ test('energy<10：runActions 层连只读都不做 —— 零执行、工具零�
       ],
     }, deps)
 
-    assert.deepEqual(outcome.executed, [], 'energy<10 时一个动作都不许执行，实际 ' + JSON.stringify(outcome.executed))
-    assert.equal(outcome.skipped.length, 3, '三个动作都必须记跳过，实际 ' + JSON.stringify(outcome.skipped))
+    // 读照常：bili_watch 必须真的执行了
+    assert.equal(outcome.executed.length, 1, 'energy<10 时只读动作应当照常执行，实际 ' + JSON.stringify(outcome.executed))
+    assert.equal(outcome.executed[0].tool, 'bili_watch', '执行的那条必须是只读的 bili_watch')
+    assert.equal(outcome.executed[0].ok, true, '只读这条应当成功')
+    assert.equal(watch.calls, 1, 'energy<10 时只读工具必须被真的调用一次，实际 ' + watch.calls + ' 次')
+    assert.equal(outcome.skipped.length, 2, '只该有两个写动作被跳过（读不再被跳过），实际 ' + JSON.stringify(outcome.skipped))
     // why 是可观测契约：审计里唯一能解释"那天为什么一条都没动"的就是这个字符串。
     // 钉死它 —— 改文案等于改行为，应该让用例红，而不是静默漂移。
     for (const item of outcome.skipped) assert.equal(item.why, 'energy-too-low', '每个跳过的 reason 都必须是 energy-too-low，实际 ' + JSON.stringify(item))
-    assert.equal(watch.calls, 0, 'energy<10 时连只读工具都不许被调用，实际 ' + watch.calls + ' 次')
-    assert.equal(comment.calls, 0, '写工具同样零调用，实际 ' + comment.calls + ' 次')
+    assert.equal(comment.calls, 0, '写工具零调用（累到不行还发言 = 找风控），实际 ' + comment.calls + ' 次')
     assert.equal(dm.calls, 0, '私信同样零调用，实际 ' + dm.calls + ' 次')
   } finally {
     env.restore()
@@ -545,7 +549,7 @@ test('curiosity 闸·回归：curiosity=60 时 watch / search / playurl 三条�
   }
 })
 
-test('白名单 16 项：含 bili_playurl、仍不含 bili_image_upload；低好奇时 playurl 的理由是 low-curiosity 而不是 whitelist', async () => {
+test('白名单 19 项：含 bili_playurl / bili_at_me / bili_dm_inbox / bili_fav_list、仍不含 bili_image_upload；低好奇时 playurl 的理由是 low-curiosity 而不是 whitelist', async () => {
   const env = metricsEnv('metrics-whitelist')
   try {
     const actions = await import(repoUrl('lib/core/actions.js'))
@@ -553,7 +557,11 @@ test('白名单 16 项：含 bili_playurl、仍不含 bili_image_upload；低好
     const { patchState } = await import(repoUrl('lib/core/state.js'))
     schedule.unlock()
 
-    assert.equal(actions.WHITELIST.length, 16, '白名单必须是 16 项（第二批补了 bili_playurl），实际 ' + actions.WHITELIST.length + ' 项：' + actions.WHITELIST.join(','))
+    assert.equal(actions.WHITELIST.length, 19, '白名单必须是 19 项（16 + 三条纯只读通道），实际 ' + actions.WHITELIST.length + ' 项：' + actions.WHITELIST.join(','))
+    // 2026-11-02 补的三条纯只读：漏了它们，off 模式下连「谁@我了」「收件箱」「收藏夹」都调不到
+    for (const name of ['bili_at_me', 'bili_dm_inbox', 'bili_fav_list']) {
+      assert.ok(actions.WHITELIST.includes(name), name + ' 必须在白名单里（纯只读通道）')
+    }
     assert.ok(actions.WHITELIST.includes('bili_playurl'), 'bili_playurl 必须在白名单里（否则 low-curiosity 永远看不到）')
     assert.equal(actions.WHITELIST.includes('bili_image_upload'), false, 'bili_image_upload 必须仍在白名单外（传图不算她的日常动作）')
 
