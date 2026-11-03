@@ -674,13 +674,14 @@ test('没看成时"必须说明原因"：视频读失败也要把 bvid 与「没
 
 /* ══════════════════════════ 19-20. 分频道文案：代码管频道，不管文风 ══════════════════════════ */
 
-test('只有 say、没有 comment/reply：评论与回复都零调用，两条审计各写清「跳过」原因', async () => {
+test('只有 say、没有 comment/reply：评论仍必须发 1 条（补写或兜底句），回复仍零调用', async () => {
   const env = atEnv('at-channel-say-only')
   try {
     const autonomy = await import(repoUrl('lib/core/autonomy.js'))
     const audit = await import(repoUrl('lib/core/audit.js'))
     autonomy.stop()
-    // commentAfterWatch 打开，而决策只给 say —— 这条守的是「say 绝不许顶成公开文案」
+    // commentAfterWatch 打开，决策只给 say：2026-11-02 起「看完必须评论」，所以评论会走补写/兜底句发出；
+    // 但**回复**仍然只认 reply —— 这条守的是「say 绝不许顶成公开文案」。
     await primeForMention({ commentAfterWatch: true })
 
     const BVID = 'BV1CAnN6uEUN'
@@ -693,7 +694,19 @@ test('只有 say、没有 comment/reply：评论与回复都零调用，两条�
     const comment = tool('bili_comment', () => ({ ok: true, data: { rpid: 8001 } }))
     const reply = tool('bili_reply', () => ({ ok: true, data: { rpid: 8002 } }))
 
-    const llm = fakeLlm({ mood: '平静', say: '我在刷关注列，还没看到什么特别的', actions: [{ tool: 'bili_watch', args: { limit: 3 } }], diary: '', memory: [] })
+    // 第一次是决策，第二次是「补写评论」（repairComment 会再问模型一次，≤60 字）
+    let llmCalls = 0
+    const llm = {
+      async *stream () {
+        llmCalls += 1
+        if (llmCalls === 1) {
+          yield { type: 'text-delta', text: JSON.stringify({ mood: '平静', say: '我在刷关注列，还没看到什么特别的', actions: [{ tool: 'bili_watch', args: { limit: 3 } }], diary: '', memory: [] }) }
+        } else {
+          yield { type: 'text-delta', text: '这条海洋镜头拍得挺安静的' }
+        }
+        yield { type: 'finish', reason: { kind: 'ok' } }
+      }
+    }
     const deps = {
       tools: new Map([['bili_at_me', atMe], ['bili_video_info', info], ['bili_watch', watch], ['bili_comment', comment], ['bili_reply', reply]]),
       llm, log: () => {}, ctx: {}
@@ -701,14 +714,18 @@ test('只有 say、没有 comment/reply：评论与回复都零调用，两条�
 
     const result = await autonomy.runOnce('manual', deps)
     assert.equal(result.ok, true, '这一轮本身应当成功')
-    assert.equal(comment.calls.length, 0, '只有 say 时一条评论都不许发（say 只用于私信），实际 ' + comment.calls.length)
+    assert.equal(comment.calls.length, 1, '看完必须评论：只有 say 时也要发 1 条（走补写），实际 ' + comment.calls.length)
+    assert.equal(comment.calls[0].message, '这条海洋镜头拍得挺安静的', '补写出来的那句话就是发出去的正文，实际 ' + JSON.stringify(comment.calls[0].message))
+    assert.notEqual(comment.calls[0].message, '我在刷关注列，还没看到什么特别的', 'say 绝不许顶成公开评论')
     assert.equal(reply.calls.length, 0, '只有 say 时一条回复都不许发，实际 ' + reply.calls.length)
 
     const rows = audit.readAudit(50)
     const commentRows = rows.filter((row) => row.args?.commentFallback === 'true')
     const replyRows = rows.filter((row) => row.args?.mentionFallback === 'true')
-    assert.equal(commentRows.length, 1, '评论侧必须留一条跳过审计，实际 ' + commentRows.length)
-    assert.match(String(commentRows[0].why), /跳过：没有可说的内容/, '评论侧 why 要写清没内容可发，实际 ' + commentRows[0].why)
+    // 审计要能看出「这条是补写来的」（新规则下不再有「跳过」这一支）
+    const repairRows = rows.filter((row) => row.args?.commentRepair === 'true')
+    assert.equal(repairRows.length, 1, '补写成功必须留一条 commentRepair 审计，实际 ' + repairRows.length)
+    assert.equal(rows.filter((row) => /跳过：没有可说的内容/.test(String(row.why))).length, 0, '新规则下不该再有「跳过：没有可说的内容」')
     assert.equal(replyRows.length, 1, '回复侧必须留一条跳过审计，实际 ' + replyRows.length)
     assert.match(String(replyRows[0].why), /跳过：没有可回的内容/, '回复侧 why 要写清没内容可回，实际 ' + replyRows[0].why)
   } finally {

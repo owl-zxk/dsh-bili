@@ -111,7 +111,7 @@ test('兜底：空 actions 时调 bili_watch(popular,5) + 第一条的 bili_vide
 
 /* ══════════════════════════ b. 已看过 → 不兜底 ══════════════════════════ */
 
-test('已看过：决策里已有成功的 bili_watch → 不再兜底（watch 只调 1 次、fallback 审计 0 条）', async () => {
+test('已看过：不再兜底看（watch 只 1 次），但「看完必须评论」的补写会读 1 次 video_info', async () => {
   const env = watchEnv('watch-already')
   try {
     const autonomy = await import(repoUrl('lib/core/autonomy.js'))
@@ -130,7 +130,10 @@ test('已看过：决策里已有成功的 bili_watch → 不再兜底（watch �
 
     assert.equal(watch.calls.length, 1, '已经看过视频时 bili_watch 只该被调用 1 次（模型那次），实际 ' + watch.calls.length + ' 次')
     assert.deepEqual(watch.calls[0], { limit: 2 }, '那一次必须来自模型给的参数，而不是兜底的 popular/5，实际 ' + JSON.stringify(watch.calls[0]))
-    assert.equal(info.calls.length, 0, '不兜底就不该额外看详情，实际 ' + info.calls.length + ' 次')
+    // 2026-11-02：看完必须评论 → 没有 comment 时会补写一次，补写要先读一次 video_info
+    // （那是**读**，不占写闸；也不等于「兜底看视频」）。上限 1 次：不许为了补写反复读。
+    assert.ok(info.calls.length <= 1, '补写最多读一次详情，实际 ' + info.calls.length + ' 次')
+    if (info.calls.length === 1) assert.equal(info.calls[0].bvid, BVID, '读的就是刚看的那个视频，实际 ' + JSON.stringify(info.calls[0]))
     const fallbackRows = auditRows(audit).filter((row) => row.args?.fallback === 'true')
     assert.equal(fallbackRows.length, 0, '不兜底时不该有 fallback 审计，实际 ' + JSON.stringify(fallbackRows))
     // 模型那条走 actions 的记账 —— 2026-11-01 起**主动读也计入** todayCounts.read（此前只有兜底计），
