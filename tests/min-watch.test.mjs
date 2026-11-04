@@ -85,7 +85,8 @@ test('兜底：空 actions 时调 bili_watch(popular,5) + 第一条的 bili_vide
 
     // ① 调用序列：popular(limit 5) → 第一条 bvid 的详情
     assert.equal(watch.calls.length, 1, '兜底应当只调一次 bili_watch，实际 ' + watch.calls.length + ' 次')
-    assert.deepEqual(watch.calls[0], { source: 'popular', limit: 5 }, '兜底的 bili_watch 必须是 popular + limit 5，实际 ' + JSON.stringify(watch.calls[0]))
+    // 2026-11-02 起兜底带 maxDuration=600（深读硬上限 10 分钟，先筛掉看不完的）
+    assert.deepEqual(watch.calls[0], { source: 'popular', limit: 5, maxDuration: 600 }, '兜底的 bili_watch 必须是 popular + limit 5 + maxDuration 600，实际 ' + JSON.stringify(watch.calls[0]))
     assert.equal(info.calls.length, 1, '拿到列表后应当对第一条调一次 bili_video_info，实际 ' + info.calls.length + ' 次')
     assert.deepEqual(info.calls[0], { bvid: BVID }, '看详情用的必须是列表第一条的 bvid，实际 ' + JSON.stringify(info.calls[0]))
 
@@ -216,7 +217,7 @@ test('闸：energy=8 → 最小动作（popular/limit 1，不取详情）；allo
     assert.equal(metricsModule.effectiveAllows({ read: true }, { ...BASE_METRICS, energy: 8 }).read, false, '前提：energy<10 时 effectiveAllows 仍会关掉 read（但兜底已不看这条）')
     const tired = await runCase({ metrics: { ...BASE_METRICS, energy: 8 }, allows: {}, minWatchPerWake: true })
     assert.equal(tired.watch.calls.length, 1, 'energy=8 时应当恰好兜底一次 bili_watch，实际 ' + tired.watch.calls.length + ' 次')
-    assert.deepEqual(tired.watch.calls[0], { source: 'popular', limit: 1 }, '最小动作必须是 popular + limit 1，实际 ' + JSON.stringify(tired.watch.calls[0]))
+    assert.deepEqual(tired.watch.calls[0], { source: 'popular', limit: 1, maxDuration: 600 }, '最小动作必须是 popular + limit 1 + maxDuration 600，实际 ' + JSON.stringify(tired.watch.calls[0]))
     assert.equal('deep' in tired.watch.calls[0], false, '最小动作不许带 deep（深读一条约 2 万 token，累到不行不该烧）')
     assert.equal(tired.info.calls.length, 0, '最小动作连详情都不取（那是第二次请求），实际 ' + tired.info.calls.length + ' 次')
     const minimalRows = tired.rows.filter((row) => row.args?.minimal === 'true')
@@ -292,7 +293,7 @@ test('energy=50 回归：兜底仍是 popular/limit 5 且会取第一条详情�
     const rows = audit.readAudit(50).slice(before)
 
     assert.equal(watch.calls.length, 1, '正常精力下兜底仍是一次 bili_watch，实际 ' + watch.calls.length)
-    assert.deepEqual(watch.calls[0], { source: 'popular', limit: 5 }, '正常路径必须仍是 popular + limit 5，实际 ' + JSON.stringify(watch.calls[0]))
+    assert.deepEqual(watch.calls[0], { source: 'popular', limit: 5, maxDuration: 600 }, '正常路径必须仍是 popular + limit 5 + maxDuration 600，实际 ' + JSON.stringify(watch.calls[0]))
     assert.equal(info.calls.length, 1, '正常路径必须取第一条详情，实际 ' + info.calls.length)
     assert.deepEqual(info.calls[0], { bvid: BVID }, '看的就是列表第一条，实际 ' + JSON.stringify(info.calls[0]))
     assert.equal(rows.filter((row) => row.args?.minimal === 'true').length, 0, '正常路径不该出现 minimal 审计')
@@ -389,6 +390,95 @@ test('缺 bvid 跳过：recommend 原始 3 条里 1 条没 bvid → count 2 且�
     assert.equal(blank.data.count, 0, 'count 必须是 0，实际 ' + JSON.stringify(blank.data.count))
     assert.equal(typeof blank.data.note, 'string', '空列表要带 note 说明原因，实际 ' + JSON.stringify(blank.data.note))
     assert.match(String(blank.data.note), /没给东西|换 popular/, 'note 要说清这次没给东西，实际 ' + blank.data.note)
+  } finally {
+    env.restore()
+  }
+})
+
+/* ══════════════════════════ maxDuration 过滤（2026-11-02） ══════════════════════════ */
+
+/** 造一批原始 list 条目（时长可按需缺失）。 */
+function rawList (durations) {
+  return durations.map((duration, i) => {
+    const item = { bvid: 'BV1CAnN6uE' + 'N' + String(i).padStart(2, '0'), aid: 100 + i, title: '第 ' + i + ' 条', duration, owner: { mid: 9, name: 'UP' }, stat: { view: 10 + i } }
+    if (duration === undefined) delete item.duration
+    return item
+  })
+}
+
+/** 用假 client 直接跑 bili_watch 工具（不经过网络）。 */
+async function runWatchTool (env, args, extraDeps = {}) {
+  const { buildTools } = await import(repoUrl('lib/tools/index.js'))
+  const list = extraDeps.list ?? []
+  const client = { async get (target) { if (target === '/x/web-interface/popular') return { code: 0, message: '0', data: { list } }; return { code: 0, message: '0', data: {} } }, async post () { return { code: 0, data: {} } }, cred () { return {} }, state () { return {} } }
+  const deps = {
+    client,
+    config: { owner: { mid: 389989266 }, risk: {}, paths: { stateDir: env.selfDir } },
+    owner: { mid: 389989266 },
+    quota: { gate: () => ({ ok: true }), record: () => ({ ok: true }) },
+    capabilities: { list: () => [], call: () => ({ ok: false }) },
+    log: () => {},
+    ...extraDeps.deps
+  }
+  const watch = buildTools(deps).find((item) => item.name === 'bili_watch')
+  return { result: await watch.execute(args, {}), watch }
+}
+
+test('maxDuration 过滤：1219/3041/236/1895/728 + maxDuration 600 → 只剩 236 那条；深读目标也是它', async () => {
+  const env = watchEnv('watch-maxduration')
+  try {
+    const list = rawList([1219, 3041, 236, 1895, 728])
+    const { result } = await runWatchTool(env, { source: 'popular', limit: 5, maxDuration: 600 }, { list })
+    assert.equal(result.ok, true, '这一轮应当成功，实际 ' + JSON.stringify(result).slice(0, 160))
+    assert.equal(result.data.count, 1, '只有 236 秒那条 ≤600，实际 count ' + result.data.count)
+    assert.equal(result.data.items[0].duration, 236, '留下的必须是 236 秒那条，实际 ' + JSON.stringify(result.data.items.map((item) => item.duration)))
+
+    // 深读目标必须是过滤后的那条（不是原始列表的第一条）。
+    // 这个测试环境没有宿主的 video_understand 插件，所以 deep 会整体回 capability-not-found —— 那是预期，
+    // 正好用它的 detail.items 来证明「深读的候选集合就是过滤后的集合」。
+    const { result: deep } = await runWatchTool(env, { source: 'popular', limit: 5, maxDuration: 600, deep: true, deepCount: 1 }, { list })
+    assert.equal(deep.ok, false, '没有 video_understand 插件时整体回 capability-not-found，实际 ' + JSON.stringify(deep).slice(0, 160))
+    assert.equal(deep.reason, 'capability-not-found', 'reason 必须是 capability-not-found，实际 ' + deep.reason)
+    assert.equal(deep.detail.items.length, 1, '深读候选只能是过滤后的那一条，实际 ' + JSON.stringify(deep.detail.items))
+    assert.equal(deep.detail.items[0].bvid, list[2].bvid, '深读候选必须是 236 秒那条，实际 ' + JSON.stringify(deep.detail.items[0].bvid))
+    // 注：非空路径的回包不带 maxDuration（只有全空那支会回显，见 lib/tools/index.js:384 与 :465），
+    // 所以这里不断言回显，只断言过滤结果本身。
+
+  } finally {
+    env.restore()
+  }
+})
+
+test('missing duration：缺时长的那条在 maxDuration 下仍保留（不许因缺字段被丢掉）', async () => {
+  const env = watchEnv('watch-maxduration-missing')
+  try {
+    const list = rawList([1219, undefined, 236])
+    const { result } = await runWatchTool(env, { source: 'popular', limit: 5, maxDuration: 600 }, { list })
+    assert.equal(result.ok, true)
+    assert.equal(result.data.count, 2, '缺时长 + 236 秒两条都该留下，实际 ' + result.data.count)
+    const durations = result.data.items.map((item) => item.duration)
+    assert.equal(durations.includes(0), true, '缺时长的那条会被规范化成 0，必须仍在列表里，实际 ' + JSON.stringify(durations))
+    assert.equal(result.data.items.some((item) => item.bvid === list[1].bvid), true, '缺 bvid 的判定不该按 id 丢，实际 ' + JSON.stringify(result.data.items.map((item) => item.bvid)))
+  } finally {
+    env.restore()
+  }
+})
+
+test('全超时：maxDuration 200 → ok 仍 true、count 0、note 说清；不传 maxDuration 时与改动前一致', async () => {
+  const env = watchEnv('watch-maxduration-none')
+  try {
+    const list = rawList([1219, 3041, 236, 1895, 728])
+    const { result } = await runWatchTool(env, { source: 'popular', limit: 5, maxDuration: 200 }, { list })
+    assert.equal(result.ok, true, '全超时不是失败：ok 必须仍是 true')
+    assert.equal(result.data.count, 0, '没有 ≤200 秒的，count 必须是 0，实际 ' + result.data.count)
+    assert.equal(typeof result.data.note, 'string', '要带 note 说明为什么是空的')
+    assert.match(String(result.data.note), /没有 ≤200 秒/, 'note 要写清没有 ≤200 秒的视频，实际 ' + result.data.note)
+
+    // 回归：不传 maxDuration → 全部保留、顺序不变
+    const { result: plain } = await runWatchTool(env, { source: 'popular', limit: 5 }, { list })
+    assert.equal(plain.data.count, 5, '不传 maxDuration 时不许过滤，实际 ' + plain.data.count)
+    assert.deepEqual(plain.data.items.map((item) => item.duration), [1219, 3041, 236, 1895, 728], '顺序必须与来源一致，实际 ' + JSON.stringify(plain.data.items.map((item) => item.duration)))
+    assert.equal(plain.data.maxDuration === undefined, true, '不传时回包不该带 maxDuration，实际 ' + JSON.stringify(plain.data.maxDuration))
   } finally {
     env.restore()
   }
