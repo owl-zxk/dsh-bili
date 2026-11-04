@@ -146,7 +146,7 @@ test('已看过：不再兜底看（watch 只 1 次），但「看完必须评�
 
 /* ══════════════════════════ c. 只换一次源 ══════════════════════════ */
 
-test('换源只换一次：popular 失败 → ranking 成功（恰好两次，不重试第三次），并对 ranking 的第一条看详情', async () => {
+test('换源按轮换表推进一次：popular 失败 → **下一个 recommend** 成功（恰好两次，不重试第三次），并对它的第一条看详情', async () => {
   const env = watchEnv('watch-fallback-once')
   try {
     const autonomy = await import(repoUrl('lib/core/autonomy.js'))
@@ -155,11 +155,13 @@ test('换源只换一次：popular 失败 → ranking 成功（恰好两次，�
     autonomy.stop()
     await seedState()
 
-    const RANKING_BVID = 'BV1xx411c7mD'
+    const NEXT_BVID = 'BV1xx411c7mD'
+    // 轮换表：popular → recommend → ranking → feed（2026-11-02 用户要求「不要只盯热门」）
+    const ROTATION = ['popular', 'recommend', 'ranking', 'feed']
     const watch = tool('bili_watch', (args) => (args.source === 'popular'
       ? { ok: false, reason: 'bili-error', human: '热门挂了' }
-      : { ok: true, data: { items: [{ bvid: RANKING_BVID }] } }))
-    const info = tool('bili_video_info', () => ({ ok: true, data: { bvid: RANKING_BVID } }))
+      : { ok: true, data: { items: [{ bvid: NEXT_BVID }] } }))
+    const info = tool('bili_video_info', () => ({ ok: true, data: { bvid: NEXT_BVID } }))
     const llm = fakeLlm({ mood: '平静', say: '', actions: [], diary: '', memory: [] })
     const deps = { tools: new Map([['bili_watch', watch], ['bili_video_info', info]]), llm, log: () => {}, ctx: {} }
 
@@ -167,13 +169,16 @@ test('换源只换一次：popular 失败 → ranking 成功（恰好两次，�
     assert.equal(result.ok, true, 'popular 失败但兜底换源成功，这一轮仍应当 ok')
 
     const sources = watch.calls.map((call) => call.source)
-    assert.deepEqual(sources, ['popular', 'ranking'], '恰好试两个来源、每个一次（不重试第三次），实际 ' + JSON.stringify(sources))
-    // 读代码确认的语义：换源成功后 **ranking 的 items 仍会被用来挑第一条看详情**
-    assert.deepEqual(info.calls, [{ bvid: RANKING_BVID }], '换源拿到列表后，仍然要对第一条看详情（用的必须是 ranking 的第一条），实际 ' + JSON.stringify(info.calls))
+    assert.equal(sources.length, 2, '恰好两次调用（失败换一次源就不再试），实际 ' + JSON.stringify(sources))
+    assert.notEqual(sources[1], sources[0], '第二次的来源必须与第一次不同，实际 ' + JSON.stringify(sources))
+    assert.ok(ROTATION.includes(sources[1]), '第二次的来源必须在轮换表里，实际 ' + JSON.stringify(sources[1]))
+    assert.equal(sources[1], ROTATION[(ROTATION.indexOf(sources[0]) + 1) % ROTATION.length], '第二次必须是轮换表里第一次的下一个（popular → recommend），实际 ' + JSON.stringify(sources))
+    assert.deepEqual(info.calls, [{ bvid: NEXT_BVID }], '换源拿到列表后，仍要对它的第一条看详情，实际 ' + JSON.stringify(info.calls))
 
     const rows = auditRows(audit).filter((row) => row.args?.fallback === 'true')
     assert.equal(rows.length, 3, '应当有三条 fallback 审计（popular 失败、ranking 成功、看详情），实际 ' + rows.length + '：' + JSON.stringify(rows.map((r) => r.tool + '/' + (r.args?.source ?? r.args?.bvid))))
-    assert.deepEqual(rows.filter((row) => row.tool === 'bili_watch').map((row) => row.args.source), ['popular', 'ranking'], '两条 watch 审计的来源要对得上')
+    const auditSources = rows.filter((row) => row.tool === 'bili_watch').map((row) => row.args.source)
+    assert.deepEqual(auditSources, sources, '两条 watch 审计的来源要与实际调用一致，实际 ' + JSON.stringify(auditSources))
   } finally {
     env.restore()
   }
@@ -291,6 +296,99 @@ test('energy=50 回归：兜底仍是 popular/limit 5 且会取第一条详情�
     assert.equal(info.calls.length, 1, '正常路径必须取第一条详情，实际 ' + info.calls.length)
     assert.deepEqual(info.calls[0], { bvid: BVID }, '看的就是列表第一条，实际 ' + JSON.stringify(info.calls[0]))
     assert.equal(rows.filter((row) => row.args?.minimal === 'true').length, 0, '正常路径不该出现 minimal 审计')
+  } finally {
+    env.restore()
+  }
+})
+
+/* ══════════════════════════ 轮换表的三条保护（2026-11-02） ══════════════════════════ */
+
+const ROTATION_ORDER = ['popular', 'recommend', 'ranking', 'feed']
+
+test('轮换推进：连续 4 轮兜底 → popular / recommend / ranking / feed，且每次把 watchSourceRotation 写成这一格', async () => {
+  const env = watchEnv('watch-rotation')
+  try {
+    const autonomy = await import(repoUrl('lib/core/autonomy.js'))
+    const schedule = await import(repoUrl('lib/core/schedule.js'))
+    const { patchState, readState } = await import(repoUrl('lib/core/state.js'))
+    autonomy.stop()
+    schedule.unlock()
+    schedule.saveSchedule({ enabled: true, windows: [{ start: '00:00', end: '24:00' }], allows: { read: true }, minWatchPerWake: true, commentAfterWatch: false, bedtimeReport: false })
+    patchState({ counters: {}, silenceUntil: 0, metrics: { energy: 60, mood: 55, curiosity: 65, affinity: 50, boredom: 30, confidence: 45 }, watchSourceRotation: '' })
+
+    const watch = tool('bili_watch', () => ({ ok: true, data: { items: [{ bvid: BVID }] } }))
+    const info = tool('bili_video_info', () => ({ ok: true, data: { title: '随便一条' } }))
+    const llm = fakeLlm({ mood: '平静', say: '', actions: [], diary: '', memory: [] })
+    const deps = { tools: new Map([['bili_watch', watch], ['bili_video_info', info]]), llm, log: () => {}, ctx: {} }
+
+    const seen = []
+    for (let round = 0; round < 4; round += 1) {
+      const before = watch.calls.length
+      await autonomy.runOnce('manual', deps)
+      const thisRound = watch.calls.slice(before).map((call) => call.source)
+      assert.equal(thisRound.length, 1, '第 ' + (round + 1) + ' 轮只该兜底一次（列表非空不换源），实际 ' + JSON.stringify(thisRound))
+      seen.push(thisRound[0])
+      assert.equal(readState().watchSourceRotation, thisRound[0], '第 ' + (round + 1) + ' 轮应当把 watchSourceRotation 写成 ' + thisRound[0] + '，实际 ' + JSON.stringify(readState().watchSourceRotation))
+    }
+
+    assert.deepEqual(seen, ROTATION_ORDER, '四轮必须依次是 popular → recommend → ranking → feed，实际 ' + JSON.stringify(seen))
+  } finally {
+    env.restore()
+  }
+})
+
+test('空列表换源：recommend 返回 0 条 → 自动换下一个来源，恰好换 1 次；下一个也是 0 就不再换（总共 ≤2 次请求）', async () => {
+  const env = watchEnv('watch-empty-switch')
+  try {
+    const autonomy = await import(repoUrl('lib/core/autonomy.js'))
+    const schedule = await import(repoUrl('lib/core/schedule.js'))
+    const { patchState } = await import(repoUrl('lib/core/state.js'))
+    autonomy.stop()
+    schedule.unlock()
+    schedule.saveSchedule({ enabled: true, windows: [{ start: '00:00', end: '24:00' }], allows: { read: true }, minWatchPerWake: true, commentAfterWatch: false, bedtimeReport: false })
+    // 让这一轮从 recommend 开始（上一格是 popular）
+    patchState({ counters: {}, silenceUntil: 0, metrics: { energy: 60, mood: 55, curiosity: 65, affinity: 50, boredom: 30, confidence: 45 }, watchSourceRotation: 'popular' })
+
+    const watch = tool('bili_watch', () => ({ ok: true, data: { items: [] } }))   // 每个来源都空
+    const info = tool('bili_video_info', () => ({ ok: true, data: {} }))
+    const llm = fakeLlm({ mood: '平静', say: '', actions: [], diary: '', memory: [] })
+    const deps = { tools: new Map([['bili_watch', watch], ['bili_video_info', info]]), llm, log: () => {}, ctx: {} }
+
+    await autonomy.runOnce('manual', deps)
+    const sources = watch.calls.map((call) => call.source)
+    assert.equal(sources[0], 'recommend', '前提：这一轮从轮换表的 recommend 开始，实际 ' + JSON.stringify(sources))
+    assert.equal(sources.length, 2, '空列表只换一次源（总共 ≤2 次请求），实际 ' + JSON.stringify(sources))
+    assert.equal(sources[1], 'ranking', 'recommend 空 → 换轮换表的下一个 ranking，实际 ' + JSON.stringify(sources))
+    assert.equal(info.calls.length, 0, '空列表没有第一条可看，不该去取详情，实际 ' + info.calls.length)
+  } finally {
+    env.restore()
+  }
+})
+
+test('缺 bvid 跳过：recommend 原始 3 条里 1 条没 bvid → count 2 且列表不含它；空列表时 ok 仍 true 并带 note', async () => {
+  const env = watchEnv('watch-recommend-shape')
+  try {
+    const videoApi = await import(repoUrl('lib/api/video.js'))
+    const rows = [
+      { id: 111, bvid: 'BV1CAnN6uEUN', title: 'A' },
+      { id: 222, title: '没有 bvid 的一条' },
+      { id: 333, bvid: 'BV1GJ411x7h7', title: 'C' },
+    ]
+    const withItems = { async get () { return { code: 0, message: '0', data: { item: rows } } } }
+    const res = await videoApi.recommend({ client: withItems }, { ps: 20 })
+    assert.equal(res.ok, true, '推荐流正常响应应当成功，实际 ' + JSON.stringify(res).slice(0, 160))
+    // api 层的形状是 { ok, data }：计数与列表都在 data 里
+    assert.equal(res.data.count, 2, '没有 bvid 的那条必须被丢掉（深读靠 bvid），实际 ' + JSON.stringify(res.data.count))
+    assert.equal(res.data.items.length, 2, 'items 长度要与 count 一致')
+    assert.equal(res.data.items.every((item) => String(item.bvid ?? '') !== ''), true, '列表里不许出现空 bvid 的项，实际 ' + JSON.stringify(res.data.items.map((item) => item.bvid)))
+    assert.equal(res.data.note === undefined, true, '有内容时不该带 note，实际 ' + JSON.stringify(res.data.note))
+
+    const empty = { async get () { return { code: 0, message: '0', data: { item: [] } } } }
+    const blank = await videoApi.recommend({ client: empty }, { ps: 20 })
+    assert.equal(blank.ok, true, '空列表不是失败：ok 必须仍是 true（换源由上层做）')
+    assert.equal(blank.data.count, 0, 'count 必须是 0，实际 ' + JSON.stringify(blank.data.count))
+    assert.equal(typeof blank.data.note, 'string', '空列表要带 note 说明原因，实际 ' + JSON.stringify(blank.data.note))
+    assert.match(String(blank.data.note), /没给东西|换 popular/, 'note 要说清这次没给东西，实际 ' + blank.data.note)
   } finally {
     env.restore()
   }
